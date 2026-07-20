@@ -1,68 +1,35 @@
-class PolicyEngine:
+"""Decides which WAN should carry traffic based on SLA + quality score."""
 
-    # --- SLA thresholds (tunable) ---
-    MAX_LATENCY = 120      # ms
-    MAX_JITTER = 20        # ms
-    MAX_LOSS = 5           # %
+from config import SCORE_WEIGHTS, SLA
+
+
+class PolicyEngine:
 
     def wan_bad(self, wan):
         return (
-            wan["lat"] > self.MAX_LATENCY or
-            wan["jit"] > self.MAX_JITTER or
-            wan["loss"] > self.MAX_LOSS
+            not wan["up"]
+            or wan["lat"] > SLA["max_latency"]
+            or wan["jit"] > SLA["max_jitter"]
+            or wan["loss"] > SLA["max_loss"]
         )
 
-    def decide(self, app, metrics, wan_state):
+    def score(self, wan):
+        return (
+            wan["lat"] * SCORE_WEIGHTS["latency"]
+            + wan["jit"] * SCORE_WEIGHTS["jitter"]
+            + wan["loss"] * SCORE_WEIGHTS["loss"]
+        )
 
-        wan1 = metrics["WAN1"]
-        wan2 = metrics["WAN2"]
+    def decide(self, metrics):
+        """Return the best WAN name.
 
-        wan1_up = wan_state["WAN1"]
-        wan2_up = wan_state["WAN2"]
+        Prefers links that meet SLA; if none do, falls back to the
+        least-bad link that is still up. Returns None if every WAN is down.
+        """
+        healthy = {n: w for n, w in metrics.items() if not self.wan_bad(w)}
+        pool = healthy or {n: w for n, w in metrics.items() if w["up"]}
 
-        # mark unusable WANs
-        wan1_bad = not wan1_up or self.wan_bad(wan1)
-        wan2_bad = not wan2_up or self.wan_bad(wan2)
-
-        def score(w):
-            return w["lat"] * 0.5 + w["jit"] * 0.3 + w["loss"] * 0.2
-
-        # -------------------------
-        # VOIP (strict SLA)
-        # -------------------------
-        if app == "voip":
-
-            if not wan1_bad and not wan2_bad:
-                return "WAN1" if score(wan1) < score(wan2) else "WAN2"
-
-            if not wan1_bad:
-                return "WAN1"
-
-            if not wan2_bad:
-                return "WAN2"
-
+        if not pool:
             return None
 
-        # -------------------------
-        # VIDEO (moderate SLA)
-        # -------------------------
-        if app == "video":
-
-            if not wan1_bad and not wan2_bad:
-                return "WAN1" if score(wan1) < score(wan2) else "WAN2"
-
-            if not wan1_bad:
-                return "WAN1"
-
-            return "WAN2"
-
-        # -------------------------
-        # BULK (loose SLA)
-        # -------------------------
-        if not wan1_bad and not wan2_bad:
-            return "WAN1" if score(wan1) < score(wan2) else "WAN2"
-
-        if not wan1_bad:
-            return "WAN1"
-
-        return "WAN2"
+        return min(pool, key=lambda n: self.score(pool[n]))

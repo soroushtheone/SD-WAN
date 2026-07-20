@@ -1,42 +1,75 @@
+"""SD-WAN control panel.
+
+The single entry point. It reads everything from config.py and manages the
+default route automatically — you never run `ip route` or any other command
+by hand. Just edit config.py, then run:
+
+    sudo python3 main.py
+"""
+
 import time
+
+from config import HOLD_TIME, POLL_INTERVAL, PRIMARY_WAN, SWITCH_MARGIN
 from monitor import get_wan_metrics
 from policy_engine import PolicyEngine
 from router import Router
-from marker import Marker
 
-engine = PolicyEngine()
-router = Router()
-marker = Marker()
 
-CURRENT_WAN = "WAN1"
-VOIP_WAN = "WAN1"
+def main():
+    engine = PolicyEngine()
+    router = Router()
 
-while True:
+    active = PRIMARY_WAN
+    print(f"[SD-WAN] Starting. Applying primary WAN: {active}")
 
-    metrics = get_wan_metrics(CURRENT_WAN)
+    # Apply the initial route automatically on startup.
+    if not router.apply(active):
+        print(f"[SD-WAN] Primary {active} unavailable; will pick a link from metrics.")
+        active = None
 
-    wan_state = {
-        "WAN1": metrics["WAN1"]["up"],
-        "WAN2": metrics["WAN2"]["up"]
-    }
+    last_switch = 0
 
-    # -------------------------
-    # GLOBAL DEFAULT WAN (fallback traffic)
-    # -------------------------
-    best_wan = engine.decide("bulk", metrics, wan_state)
+    while True:
+        metrics = get_wan_metrics(active or "NONE")
+        best = engine.decide(metrics)
 
-    if best_wan and best_wan != CURRENT_WAN:
-        print(f"[SD-WAN] Switching default {CURRENT_WAN} → {best_wan}")
-        if router.switch(best_wan):
-            CURRENT_WAN = best_wan
+        if best is None:
+            print("[SD-WAN] All WANs are down!")
+            time.sleep(POLL_INTERVAL)
+            continue
 
-    # -------------------------
-    # VOIP DECISION (independent)
-    # -------------------------
-    voip_wan = engine.decide("voip", metrics, wan_state)
+        # No active link yet -> take the best one immediately.
+        if active is None:
+            if router.apply(best):
+                active = best
+                last_switch = time.time()
+            time.sleep(POLL_INTERVAL)
+            continue
 
-    if voip_wan and voip_wan != VOIP_WAN:
-        marker.set_voip_wan(voip_wan)
-        VOIP_WAN = voip_wan
+        status = " | ".join(
+            f"{n} score={engine.score(w):.2f}" for n, w in metrics.items()
+        )
+        print(f"{status} | ACTIVE={active}")
 
-    time.sleep(3)
+        now = time.time()
+
+        # Immediate failover if the active link breaches SLA.
+        if engine.wan_bad(metrics[active]) and best != active:
+            print(f"[SD-WAN] Active {active} failed SLA -> failover to {best}")
+            if router.apply(best):
+                active = best
+                last_switch = now
+
+        # Otherwise switch only after HOLD_TIME and a clear improvement.
+        elif best != active and (now - last_switch) > HOLD_TIME:
+            if engine.score(metrics[best]) < engine.score(metrics[active]) * SWITCH_MARGIN:
+                print(f"[SD-WAN] {best} is clearly better -> switching from {active}")
+                if router.apply(best):
+                    active = best
+                    last_switch = now
+
+        time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

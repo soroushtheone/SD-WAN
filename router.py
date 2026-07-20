@@ -1,4 +1,12 @@
+"""Automatic default-route management.
+
+The operator never runs `ip route` manually — this module applies and
+switches the default route based on the WAN chosen by the controller.
+"""
+
 import subprocess
+
+from config import WAN_CONFIG
 
 
 class Router:
@@ -7,49 +15,38 @@ class Router:
         try:
             with open(f"/sys/class/net/{iface}/operstate") as f:
                 return f.read().strip() == "up"
-        except:
+        except OSError:
             return False
 
     def show_routes(self):
         result = subprocess.run(["ip", "route"], capture_output=True, text=True)
         print("[ROUTES]\n", result.stdout)
 
-    def switch(self, wan):
-
-        print(f"[ROUTER] switching to {wan}")
-
-        if wan == "WAN1":
-            iface = "enp10s0"
-            gw = "192.168.4.254"
-
-        elif wan == "WAN2":
-            iface = "enp11s0"
-            gw = "192.168.201.1"
-
-        else:
-            print("[ROUTER] invalid WAN")
+    def apply(self, wan):
+        """Force the default route onto the given WAN. Returns True on success."""
+        if wan not in WAN_CONFIG:
+            print(f"[ROUTER] invalid WAN: {wan}")
             return False
+
+        iface = WAN_CONFIG[wan]["iface"]
+        gw = WAN_CONFIG[wan]["gw"]
 
         if not self.is_link_up(iface):
-            print(f"[ROUTER] {wan} interface DOWN")
+            print(f"[ROUTER] {wan} interface {iface} is DOWN")
             return False
 
-        # FORCE CLEAN STATE
+        # Clean any existing default route (safe even if none exists).
         subprocess.run(["ip", "route", "del", "default"], stderr=subprocess.DEVNULL)
 
-        # ADD ROUTE (fail visible)
-        result = subprocess.run([
-            "ip", "route", "add", "default",
-            "via", gw,
-            "dev", iface
-        ], capture_output=True, text=True)
+        result = subprocess.run(
+            ["ip", "route", "replace", "default", "via", gw, "dev", iface],
+            capture_output=True,
+            text=True,
+        )
 
         if result.returncode != 0:
-            print("[ROUTER ERROR]", result.stderr)
+            print("[ROUTER ERROR]", result.stderr.strip())
             return False
 
-        print(f"[ROUTER] {wan} ACTIVE")
-
-        self.show_routes()
-
+        print(f"[ROUTER] {wan} is now ACTIVE (via {gw} dev {iface})")
         return True
