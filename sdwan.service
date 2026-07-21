@@ -1,0 +1,28 @@
+[Unit]
+Description=SD-WAN Controller (dual-WAN failover + quality routing)
+Documentation=https://github.com/soroushtheone/SD-WAN
+# Start after the network stack is up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Root is required to configure interfaces and change routes.
+User=root
+
+# Where the project lives on the device. Change this if you install
+# the files somewhere other than /opt/sdwan.
+WorkingDirectory=/opt/sdwan
+ExecStart=/usr/bin/python3 /opt/sdwan/main.py
+
+# Keep the controller running: restart automatically if it exits/crashes.
+Restart=always
+RestartSec=5
+
+# Send program output to the journal (view with: journalctl -u sdwan -f).
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

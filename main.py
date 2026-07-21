@@ -1,8 +1,8 @@
 """SD-WAN control panel.
 
 The single entry point. It reads everything from config.py and manages the
-default route automatically — you never run `ip route` or any other command
-by hand. Just edit config.py, then run:
+interfaces and default route automatically — you never run `ip addr`,
+`dhclient`, or `ip route` by hand. Just edit config.py, then run:
 
     sudo python3 main.py
 """
@@ -10,6 +10,7 @@ by hand. Just edit config.py, then run:
 import time
 
 from config import HOLD_TIME, POLL_INTERVAL, PRIMARY_WAN, SWITCH_MARGIN
+from interface import setup_all
 from monitor import get_wan_metrics
 from policy_engine import PolicyEngine
 from router import Router
@@ -19,8 +20,12 @@ def main():
     engine = PolicyEngine()
     router = Router()
 
+    # Discover NICs and apply addressing (static / DHCP) from config.py.
+    print("[SD-WAN] Configuring interfaces...")
+    setup_all()
+
     active = PRIMARY_WAN
-    print(f"[SD-WAN] Starting. Applying primary WAN: {active}")
+    print(f"[SD-WAN] Applying primary WAN: {active}")
 
     # Apply the initial route automatically on startup.
     if not router.apply(active):
