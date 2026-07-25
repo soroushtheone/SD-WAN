@@ -1,6 +1,10 @@
-"""Decides which WAN should carry traffic based on SLA + quality score."""
+"""Decides which WAN should carry traffic based on priority + SLA."""
 
-from config import SCORE_WEIGHTS, SLA
+import config
+
+SCORE_WEIGHTS = getattr(config, "SCORE_WEIGHTS", {"latency": 0.5, "jitter": 0.3, "loss": 0.2})
+SLA = getattr(config, "SLA", {"max_latency": 120, "max_jitter": 20, "max_loss": 5})
+WAN_PRIORITY = getattr(config, "WAN_PRIORITY", list(getattr(config, "WAN_CONFIG", {})))
 
 
 class PolicyEngine:
@@ -20,16 +24,25 @@ class PolicyEngine:
             + wan["loss"] * SCORE_WEIGHTS["loss"]
         )
 
+    def priority_order(self, names):
+        configured = [name for name in WAN_PRIORITY if name in names]
+        extras = sorted(name for name in names if name not in configured)
+        return configured + extras
+
     def decide(self, metrics):
         """Return the best WAN name.
 
-        Prefers links that meet SLA; if none do, falls back to the
-        least-bad link that is still up. Returns None if every WAN is down.
+        Uses the first healthy WAN in WAN_PRIORITY order. This gives predictable
+        primary/backup behavior and automatic failback when a higher-priority
+        link recovers. If no link meets SLA, it falls back to the first link
+        that is still physically up.
         """
-        healthy = {n: w for n, w in metrics.items() if not self.wan_bad(w)}
-        pool = healthy or {n: w for n, w in metrics.items() if w["up"]}
+        for name in self.priority_order(metrics):
+            if not self.wan_bad(metrics[name]):
+                return name
 
-        if not pool:
-            return None
+        for name in self.priority_order(metrics):
+            if metrics[name]["up"]:
+                return name
 
-        return min(pool, key=lambda n: self.score(pool[n]))
+        return None

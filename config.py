@@ -1,9 +1,30 @@
 """Central configuration for the SD-WAN controller.
 
 This is the only file you edit on the device to control the whole system.
-main.py reads these values and applies everything automatically (interface
-addressing + default route + failover). You never run `ip`/`dhclient` by hand.
+Use setup_wizard.py to generate it interactively, or edit it by hand.
+main.py reads these values and applies management-port exclusion, interface
+addressing, priority failover, and source-subnet policies automatically.
 """
+
+# Management-only interface. This port is never selected as a WAN link and is
+# left available for SSH/web/admin access.
+MANAGEMENT_INTERFACE = "enp9s0"
+
+# LAN interfaces. These are inside/client-side networks, not WAN uplinks.
+LAN_CONFIG = {
+    "LAN1": {"iface": "enp13s0", "ip": "192.168.10.1", "prefix": 24},
+}
+
+# VLAN interfaces created on LAN ports. The interface name becomes
+# "<parent>.<vlan_id>", for example enp13s0.20.
+VLAN_CONFIG = {
+    "VLAN20": {
+        "parent": "enp13s0",
+        "vlan_id": 20,
+        "ip": "192.168.20.1",
+        "prefix": 24,
+    },
+}
 
 # --- WAN interface + addressing definitions ---
 # Add or remove WANs here; the controller adapts automatically.
@@ -33,8 +54,27 @@ WAN_CONFIG = {
     },
 }
 
+# WAN priority order. The controller always uses the first healthy link.
+# If WAN1 fails it moves to WAN2; when WAN1 becomes healthy again it fails back.
+WAN_PRIORITY = ["WAN1", "WAN2"]
+
 # WAN that should be active when the controller starts.
 PRIMARY_WAN = "WAN1"
+
+# Source-subnet routing policies.
+# Each policy sends traffic from "source" through the selected WAN.
+SUBNET_POLICIES = [
+    {"source": "192.168.10.0/24", "wan": "WAN2"},
+    {"source": "192.168.20.0/24", "wan": "WAN1"},
+]
+
+# What to do with traffic that does not match SUBNET_POLICIES.
+# "allow" = use the active/default WAN.
+# "deny"  = do not install a normal default route for unmatched traffic.
+DEFAULT_POLICY = "allow"
+
+# Linux policy-routing table IDs start here. Each WAN gets one table.
+ROUTING_TABLE_BASE = 100
 
 # --- Ping targets used to measure internet quality ---
 CHECK_TARGETS = ["217.218.127.127", "5.200.200.200", "1.1.1.1"]

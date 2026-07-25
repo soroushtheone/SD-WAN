@@ -1,105 +1,230 @@
 # SD-WAN Controller
 
-A lightweight dual-WAN (multi-WAN) failover and quality-based routing
-controller for Linux. It configures each WAN interface, then continuously
-measures latency, jitter, and packet loss and keeps the **default route** on
-the best healthy link — fully automatically.
+A lightweight Linux SD-WAN controller for multi-WAN failover, priority-based
+link selection, and source-subnet routing policies.
 
-## Control panel: one file to run, one file to configure
+The project is designed around one simple idea:
 
-- **`config.py`** – the only file you edit. Define your WANs (interface,
-  gateway, static IP or DHCP), thresholds, and timings here.
-- **`main.py`** – your control panel. Run it and it does everything:
-  configures the interfaces, applies the default route, monitors the links,
-  and fails over on its own.
+> Run one setup wizard, then control the device from one file: `config.py`.
 
-> You never run `ip addr`, `dhclient`, or `ip route` by hand, and there are
-> **no iptables rules** — the controller manages addressing and a single
-> default route automatically.
+## What It Does
 
-## Project structure
+- Detects physical network interfaces.
+- Lets you choose one management-only port.
+- Configures LAN-side interfaces for client networks.
+- Creates VLAN interfaces on LAN ports.
+- Configures the remaining ports as WAN links with static IP or DHCP.
+- Assigns WAN priority, for example WAN1 first, WAN2 second, WAN3 third.
+- Sends internet traffic through the highest-priority healthy link.
+- Fails over when the active link fails SLA.
+- Fails back when the primary link becomes healthy again.
+- Adds source-subnet policies, for example:
+  - `192.168.10.0/24` through `WAN2`
+  - `192.168.20.0/24` through `WAN1`
+- Supports a default policy:
+  - `allow`: unmatched traffic uses the active WAN.
+  - `deny`: only explicit subnet policies are routed.
+- Checks required files, commands, Python syntax, service status, and common
+  service path problems.
 
-```
-config.py          # all settings (WANs, addressing, gateways, targets, SLA, timings)
-main.py            # control panel / entry point (the orchestrator loop)
-interface.py       # discovers NICs and applies static IP / DHCP from config
-monitor.py         # measures latency / jitter / loss per WAN via ping
-policy_engine.py   # picks the best WAN using SLA + weighted score
-router.py          # applies / switches the default route automatically
-sdwan.service      # systemd unit to run on boot
+## Project Structure
+
+```text
+setup_wizard.py    # interactive setup and health check
+config.py          # single control file for all device behavior
+main.py            # controller loop
+interface.py       # interface discovery and IP/DHCP setup
+monitor.py         # latency, jitter, and packet-loss checks
+policy_engine.py   # priority and SLA decision logic
+router.py          # default route and source-policy routing
+sdwan.service      # systemd service
+install.sh         # installer for /opt/sdwan
+requirements.txt   # Python package requirements
+OS_REQUIREMENTS.md # Linux package requirements
 ```
 
 ## Requirements
 
-- Linux with `ip` (iproute2), `ping`, and `dhclient` (for DHCP WANs)
+- Linux
 - Python 3.8+
-- Root privileges (configuring interfaces and routes requires it)
+- Root privileges
+- `ip` from iproute2
+- `ping`
+- `dhclient` if a WAN uses DHCP
+- `systemd` if you want the controller to run as a service
 
-## Configure
+No third-party Python packages are required. `requirements.txt` is included for
+clarity and says the project uses only the Python standard library.
 
-Edit `config.py`. Each WAN supports static or DHCP addressing:
+Before installing, install the Linux system packages.
 
-```python
-WAN_CONFIG = {
-    "WAN1": {"iface": "enp10s0", "gw": "192.168.4.254",
-             "dhcp": False, "ip": "192.168.4.10", "prefix": 24},  # static
-    "WAN2": {"iface": "enp11s0", "gw": "192.168.201.1",
-             "dhcp": True},                                       # DHCP
-}
-PRIMARY_WAN = "WAN1"
+Debian / Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install -y python3 iproute2 iputils-ping isc-dhcp-client systemd
 ```
 
-Add more WANs, tune the SLA thresholds, scoring weights, and switch timings —
-the controller adapts automatically.
+RHEL / CentOS / Fedora:
 
-## Run manually
+```bash
+sudo dnf install -y python3 iproute iputils dhcp-client systemd
+```
+
+More detail is in `OS_REQUIREMENTS.md`.
+
+## Step 1: Run the Setup Wizard
+
+Run this on the SD-WAN device:
+
+```bash
+sudo python3 setup_wizard.py
+```
+
+The wizard will:
+
+1. List physical interfaces and show existing IPv4 addresses.
+2. Ask which interface is management-only.
+3. Let you configure LAN-side interfaces.
+4. Let you create VLAN interfaces on LAN ports.
+5. Let you configure WAN interfaces with IP address and gateway.
+6. Let you configure another interface or continue.
+7. Ask for WAN priority order.
+8. Ask for subnet routing policies.
+9. Ask for default policy: `allow` or `deny`.
+10. Write the final configuration to `config.py`.
+11. Run a health check and show logs if something is wrong.
+
+## Step 2: Review the Single Control File
+
+All behavior is stored in `config.py`.
+
+Example:
+
+```python
+MANAGEMENT_INTERFACE = "enp9s0"
+
+LAN_CONFIG = {
+    "LAN1": {"iface": "enp13s0", "ip": "192.168.10.1", "prefix": 24},
+}
+
+VLAN_CONFIG = {
+    "VLAN20": {
+        "parent": "enp13s0",
+        "vlan_id": 20,
+        "ip": "192.168.20.1",
+        "prefix": 24,
+    },
+}
+
+WAN_CONFIG = {
+    "WAN1": {
+        "iface": "enp10s0",
+        "gw": "192.168.4.254",
+        "dhcp": False,
+        "ip": "192.168.4.10",
+        "prefix": 24,
+    },
+    "WAN2": {
+        "iface": "enp11s0",
+        "gw": "192.168.201.1",
+        "dhcp": True,
+    },
+}
+
+WAN_PRIORITY = ["WAN1", "WAN2"]
+PRIMARY_WAN = "WAN1"
+
+SUBNET_POLICIES = [
+    {"source": "192.168.10.0/24", "wan": "WAN2"},
+    {"source": "192.168.20.0/24", "wan": "WAN1"},
+]
+
+DEFAULT_POLICY = "allow"
+```
+
+## Step 3: Run the Controller Manually
 
 ```bash
 sudo python3 main.py
 ```
 
-## Run on boot (systemd)
+The controller will:
 
-1. Copy the project to the device (path must match the unit file, default
-   `/opt/sdwan`):
+1. Bring up configured LAN, VLAN, and WAN interfaces.
+2. Apply static IP or DHCP settings.
+3. Start with the primary WAN.
+4. Monitor latency, jitter, and packet loss.
+5. Switch to backup WANs if the active WAN fails.
+6. Switch back to the primary WAN when it recovers.
+7. Apply source-subnet routing policies.
 
-   ```bash
-   sudo mkdir -p /opt/sdwan
-   sudo cp -r ./* /opt/sdwan/
-   ```
+## Step 4: Install as a Service
 
-2. Install and enable the service:
+```bash
+sudo ./install.sh
+```
 
-   ```bash
-   sudo cp /opt/sdwan/sdwan.service /etc/systemd/system/sdwan.service
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now sdwan
-   ```
+The installer copies the project to `/opt/sdwan`, installs `sdwan.service`,
+and starts the controller.
 
-3. Check status / logs:
+If you want to run the service from the current project directory instead of
+copying to `/opt/sdwan`, run:
 
-   ```bash
-   systemctl status sdwan
-   journalctl -u sdwan -f
-   ```
+```bash
+sudo INSTALL_DIR="$(pwd)" ./install.sh
+```
 
-> If you install to a different directory, update `WorkingDirectory` and
-> `ExecStart` in `sdwan.service` accordingly.
+Useful commands:
 
-## How it works
+```bash
+systemctl status sdwan
+journalctl -u sdwan -f
+sudo systemctl restart sdwan
+```
 
-1. On startup the controller discovers NICs and applies each WAN's addressing
-   (static IP or DHCP) from `config.py`.
-2. It applies the default route to `PRIMARY_WAN`.
-3. Every `POLL_INTERVAL` seconds it pings the gateway and internet targets on
-   every WAN and computes a quality score (lower = better).
-4. A WAN breaching any SLA threshold is marked **bad**.
-5. If the **active** link breaks SLA, it fails over immediately to the best
-   available link.
-6. Otherwise it only switches after `HOLD_TIME` and when another link is
-   clearly better (score < active * `SWITCH_MARGIN`), preventing flapping.
+## How Priority Failover Works
 
-## Status
+`WAN_PRIORITY` controls link preference.
 
-- Interface addressing (static / DHCP): working.
-- Dual-WAN failover and quality-based switching: working.
+```python
+WAN_PRIORITY = ["WAN1", "WAN2", "WAN3"]
+```
+
+The controller always chooses the first healthy WAN in that list.
+
+If `WAN1` fails, traffic moves to `WAN2`.
+If `WAN1` becomes healthy again, traffic moves back to `WAN1`.
+
+## How Subnet Policies Work
+
+`SUBNET_POLICIES` controls source-based routing.
+
+```python
+SUBNET_POLICIES = [
+    {"source": "192.168.10.0/24", "wan": "WAN2"},
+    {"source": "192.168.20.0/24", "wan": "WAN1"},
+]
+```
+
+The router creates Linux policy-routing rules with `ip rule` and per-WAN
+routing tables.
+
+## Health Check
+
+The wizard checks:
+
+- Required project files.
+- Required Linux commands.
+- Python syntax.
+- `sdwan` service status, if systemd is available.
+- Recent service logs if the service is not active.
+- A wrong systemd `WorkingDirectory` path, which causes `status=200/CHDIR`.
+
+## Presentation Summary
+
+This project is a small SD-WAN controller that turns a Linux device into a
+multi-WAN router. It separates management traffic from WAN traffic, configures
+LAN, VLAN, and WAN interfaces automatically, monitors link quality, performs
+priority failover and failback, and supports policy routing for different
+source subnets.

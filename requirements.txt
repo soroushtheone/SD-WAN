@@ -1,3 +1,4 @@
-# SD-WAN controller uses only the Python standard library.
-# Requires Python 3.8+ running on Linux (uses `ip` and `ping`).
-# No third-party packages needed.
+# Python package requirements
+#
+# This project uses only the Python standard library.
+# No third-party Python packages are required.
